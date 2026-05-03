@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import lru_cache
 
 import uvicorn
 import yfinance as yf
@@ -24,6 +25,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+cache_timestamps = {}
+
 
 @app.get("/health")
 def health_check():
@@ -39,6 +42,18 @@ def health_check():
     }
 
 
+def is_cache_valid(key: str, ttl_seconds: int = 300) -> bool:
+    """Check if cached data is still valid (TTL: 5 minutes by default)"""
+    if key not in cache_timestamps:
+        return False
+    elapsed = (datetime.now() - cache_timestamps[key]).total_seconds()
+    return elapsed < ttl_seconds
+
+
+gainers_cache = {}
+losers_cache = {}
+
+
 @app.get("/stocks/gainers")
 def api_gainers(limit: int = 10, region: str = "id"):
     """
@@ -50,6 +65,13 @@ def api_gainers(limit: int = 10, region: str = "id"):
 
     Returns: {"stocks": [...], "count": 10, "region": "id"}
     """
+    cache_key = f"gainers_{region}_{limit}"
+
+    if cache_key in gainers_cache and is_cache_valid(cache_key):
+        cached_response = gainers_cache[cache_key].copy()
+        cached_response["cached"] = True
+        return cached_response
+
     try:
         if limit > 50:
             limit = 50
@@ -79,12 +101,17 @@ def api_gainers(limit: int = 10, region: str = "id"):
                 "market_cap": q.get("marketCap", 0),
             })
 
-        return {
+        response = {
             "stocks": stocks,
             "count": len(stocks),
             "region": region,
             "timestamp": datetime.now().isoformat(),
+            "cached": False,
         }
+
+        gainers_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
 
     except Exception as e:
         return {
@@ -105,6 +132,13 @@ def api_losers(limit: int = 10, region: str = "id"):
 
     Returns: {"stocks": [...], "count": 10, "region": "id"}
     """
+    cache_key = f"losers_{region}_{limit}"
+
+    if cache_key in losers_cache and is_cache_valid(cache_key):
+        cached_response = losers_cache[cache_key].copy()
+        cached_response["cached"] = True
+        return cached_response
+
     try:
         if limit > 50:
             limit = 50
@@ -134,12 +168,17 @@ def api_losers(limit: int = 10, region: str = "id"):
                 "market_cap": q.get("marketCap", 0),
             })
 
-        return {
+        response = {
             "stocks": stocks,
             "count": len(stocks),
             "region": region,
             "timestamp": datetime.now().isoformat(),
+            "cached": False,
         }
+
+        losers_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
 
     except Exception as e:
         return {
