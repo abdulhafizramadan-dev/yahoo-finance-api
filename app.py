@@ -81,6 +81,7 @@ def _serialize_value(v):
 gainers_cache = {}
 losers_cache = {}
 history_cache = {}
+news_cache = {}
 
 
 def _safe_num(x):
@@ -92,6 +93,37 @@ def _safe_num(x):
         return float(x)
     except Exception:
         return None
+
+
+def _extract_news_item(raw_item: dict) -> dict:
+    """Extract and normalize a news item from yfinance response"""
+    content = raw_item.get("content", {})
+    provider = content.get("provider", {})
+    urls = content.get("clickThroughUrl", {})
+    thumbnail = content.get("thumbnail", {})
+    finance = content.get("finance", {}).get("premiumFinance", {})
+    
+    thumbnail_urls = {}
+    if thumbnail.get("resolutions"):
+        for res in thumbnail["resolutions"]:
+            tag = res.get("tag", "")
+            thumbnail_urls[tag] = res.get("url")
+    
+    return {
+        "id": content.get("id"),
+        "title": content.get("title"),
+        "summary": content.get("summary"),
+        "datePublished": content.get("pubDate"),
+        "provider": {
+            "name": provider.get("displayName"),
+            "url": provider.get("url"),
+        },
+        "articleUrl": urls.get("url") if urls else None,
+        "thumbnail": thumbnail.get("originalUrl"),
+        "thumbnails": thumbnail_urls,
+        "isPremium": finance.get("isPremiumNews", False),
+        "isEditorsPick": content.get("metadata", {}).get("editorsPick", False),
+    }
 
 
 @app.get("/stocks/gainers")
@@ -317,6 +349,72 @@ def api_stock_detail(ticker: str, period: str = "1mo", interval: str = "1d"):
         return {
             "error": str(e),
             "status": "failed",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+@app.get("/stocks/{ticker}/news")
+def api_stock_news(ticker: str, count: int = 10, tab: str = "all"):
+    """
+    Get news feed for a stock ticker
+
+    Parameters:
+    - ticker: Stock ticker (e.g., AAPL, BBCA.JK)
+    - count: Number of news items (default: 10, max: 50)
+    - tab: News type - 'news' (default), 'all', or 'press releases'
+
+    Returns: {"news": [...news items...], "count": 10, "ticker": "AAPL"}
+    """
+    cache_key = f"news_{ticker}_{count}_{tab}"
+
+    if cache_key in news_cache and is_cache_valid(cache_key, ttl_seconds=1800):
+        cached_response = news_cache[cache_key].copy()
+        cached_response["cached"] = True
+        return cached_response
+
+    try:
+        if count > 50:
+            count = 50
+        if tab not in ["news", "all", "press releases"]:
+            tab = "news"
+
+        t = yf.Ticker(ticker)
+        raw_news = t.get_news(count=count, tab=tab)
+
+        if not raw_news:
+            response = {
+                "news": [],
+                "count": 0,
+                "ticker": ticker,
+                "newsType": tab,
+                "message": "No news available for this ticker",
+                "timestamp": datetime.now().isoformat(),
+                "cached": False,
+            }
+            news_cache[cache_key] = response
+            cache_timestamps[cache_key] = datetime.now()
+            return response
+
+        news = [_extract_news_item(item) for item in raw_news]
+
+        response = {
+            "news": news,
+            "count": len(news),
+            "ticker": ticker,
+            "newsType": tab,
+            "timestamp": datetime.now().isoformat(),
+            "cached": False,
+        }
+
+        news_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "failed",
+            "ticker": ticker,
             "timestamp": datetime.now().isoformat(),
         }
 
