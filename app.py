@@ -82,6 +82,7 @@ gainers_cache = {}
 losers_cache = {}
 history_cache = {}
 news_cache = {}
+index_cache = {}
 
 
 def _safe_num(x):
@@ -415,6 +416,127 @@ def api_stock_news(ticker: str, count: int = 10, tab: str = "all"):
             "error": str(e),
             "status": "failed",
             "ticker": ticker,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+def _get_index_info(symbol: str) -> dict:
+    """Get metadata for known indices"""
+    indices = {
+        "^JKSE": {"name": "IDX Composite", "country": "Indonesia", "currency": "IDR"},
+        "^GSPC": {"name": "S&P 500", "country": "USA", "currency": "USD"},
+        "^DJI": {"name": "Dow Jones Industrial Average", "country": "USA", "currency": "USD"},
+        "^IXIC": {"name": "NASDAQ Composite", "country": "USA", "currency": "USD"},
+        "^N225": {"name": "Nikkei 225", "country": "Japan", "currency": "JPY"},
+        "^HSI": {"name": "Hang Seng Index", "country": "Hong Kong", "currency": "HKD"},
+        "^BVSP": {"name": "Bovespa", "country": "Brazil", "currency": "BRL"},
+        "^FTSE": {"name": "FTSE 100", "country": "UK", "currency": "GBP"},
+        "^FCHI": {"name": "CAC 40", "country": "France", "currency": "EUR"},
+        "^GDAXI": {"name": "DAX", "country": "Germany", "currency": "EUR"},
+    }
+    return indices.get(symbol, {"name": "Unknown Index", "country": "N/A", "currency": "N/A"})
+
+
+@app.get("/index/{symbol}/history")
+def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", limit: int = None):
+    """
+    Get historical price data for market indices
+
+    Parameters:
+    - symbol: Index ticker (e.g., ^JKSE for Indonesia, ^GSPC for S&P 500)
+    - period: Time period - 1d, 2d, 5d, 1mo, 3mo, 6mo, 1y, 5y, max (default: 1d)
+    - interval: Data interval - 1d, 1wk, 1mo, 1h, 15m, 5m, 1m (default: 1m)
+      Note: Intraday intervals (1h, 15m, 5m, 1m) require period >= 2d. Some indices like ^JKSE don't support intraday with period=1d.
+    - limit: Optional cap on number of returned records (latest N)
+
+    Returns: {"index": {...}, "data": [...], "count": X, "period": "..."}
+    """
+    cache_key = f"index_{symbol}_{period}_{interval}_{limit}"
+
+    if cache_key in index_cache and is_cache_valid(cache_key, ttl_seconds=3600):
+        cached_response = index_cache[cache_key].copy()
+        cached_response["cached"] = True
+        return cached_response
+
+    try:
+        if not symbol:
+            return {"error": "symbol is required", "status": "failed"}
+
+        supported_indices = ["^JKSE", "^GSPC", "^DJI", "^IXIC", "^N225", "^HSI", "^BVSP", "^FTSE", "^FCHI", "^GDAXI"]
+        if symbol.upper() not in supported_indices:
+            return {
+                "error": f"Unsupported index: {symbol}",
+                "status": "failed",
+                "supported": supported_indices
+            }
+
+        hist = yf.download(symbol, period=period, interval=interval, progress=False)
+
+        if hist.empty and interval in ["1m", "5m", "15m", "1h"] and period == "1d":
+            return {
+                "error": f"{symbol} does not support {interval} interval with period=1d",
+                "status": "failed",
+                "suggestion": f"Try: /index/{symbol}/history?period=2d&interval={interval} (minimum period for intraday is 2d)",
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        if hist.empty:
+            return {
+                "error": f"No data available for {symbol}",
+                "status": "failed",
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        data = []
+        for idx, row in hist.iterrows():
+            open_val = float(row['Open'].iloc[0]) if hasattr(row['Open'], 'iloc') else float(row['Open'])
+            close_val = float(row['Close'].iloc[0]) if hasattr(row['Close'], 'iloc') else float(row['Close'])
+            high_val = float(row['High'].iloc[0]) if hasattr(row['High'], 'iloc') else float(row['High'])
+            low_val = float(row['Low'].iloc[0]) if hasattr(row['Low'], 'iloc') else float(row['Low'])
+            vol_val = int(row['Volume'].iloc[0]) if hasattr(row['Volume'], 'iloc') else int(row['Volume'])
+
+            change = close_val - open_val
+            change_percent = (change / open_val * 100) if open_val != 0 else 0
+
+            data.append({
+                "datetime": idx.strftime('%Y-%m-%d %H:%M:%S') if hasattr(idx, 'strftime') else str(idx),
+                "open": round(open_val, 2),
+                "high": round(high_val, 2),
+                "low": round(low_val, 2),
+                "close": round(close_val, 2),
+                "volume": vol_val if vol_val > 0 else 0,
+                "change": round(change, 2),
+                "changePercent": round(change_percent, 2),
+            })
+
+        if limit and limit > 0:
+            data = data[-limit:]
+
+        index_info = _get_index_info(symbol)
+
+        response = {
+            "index": {
+                "symbol": symbol,
+                "name": index_info.get("name"),
+                "country": index_info.get("country"),
+                "currency": index_info.get("currency"),
+            },
+            "period": period,
+            "interval": interval,
+            "data": data,
+            "count": len(data),
+            "timestamp": datetime.now().isoformat(),
+            "cached": False,
+        }
+
+        index_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "failed",
             "timestamp": datetime.now().isoformat(),
         }
 
