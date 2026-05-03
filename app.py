@@ -1,6 +1,8 @@
-from datetime import datetime, timedelta
-from functools import lru_cache
+import math
+import json
+from datetime import datetime
 
+import pandas as pd
 import uvicorn
 import yfinance as yf
 from fastapi import FastAPI
@@ -50,8 +52,46 @@ def is_cache_valid(key: str, ttl_seconds: int = 300) -> bool:
     return elapsed < ttl_seconds
 
 
+def _serialize_value(v):
+    """Convert common non-JSON-native values to serializable forms."""
+    try:
+        if v is None:
+            return None
+        if isinstance(v, (str, bool, int, float)):
+            return v
+        # pandas/numpy types
+        try:
+            import pandas as _pd
+            import numpy as _np
+
+            if isinstance(v, _pd.Timestamp):
+                return v.isoformat()
+            if isinstance(v, (_np.integer,)):
+                return int(v)
+            if isinstance(v, (_np.floating,)):
+                return float(v)
+        except Exception:
+            pass
+        # fallback to string
+        return str(v)
+    except Exception:
+        return str(v)
+
+
 gainers_cache = {}
 losers_cache = {}
+history_cache = {}
+
+
+def _safe_num(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, (float, int)) and math.isnan(x):
+            return None
+        return float(x)
+    except Exception:
+        return None
 
 
 @app.get("/stocks/gainers")
@@ -121,6 +161,59 @@ def api_gainers(limit: int = 10, region: str = "id"):
         }
 
 
+@app.get("/stocks/{ticker}/history")
+def api_stock_history(ticker: str, period: str = "1mo", interval: str = "1d", limit: int = None):
+    """Return OHLCV history for a ticker (suitable for charting).
+
+    - `period`: e.g. 1mo, 3mo, 1y
+    - `interval`: e.g. 1d, 1wk, 1mo, 60m
+    - `limit`: optional cap on number of returned records (latest N)
+    """
+    cache_key = f"history_{ticker}_{period}_{interval}_{limit}"
+
+    if cache_key in history_cache and is_cache_valid(cache_key):
+        cached = history_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        if not ticker:
+            return {"error": "ticker is required", "status": "failed"}
+
+        t = yf.Ticker(ticker)
+        hist = t.history(period=period, interval=interval)
+
+        # Use pandas to_json then json.loads to get a Python list of records
+        # This returns values as JSON-native types (dates as ISO strings).
+        if isinstance(hist, pd.DataFrame) and not hist.empty:
+            df = hist.reset_index()
+            if limit is not None and isinstance(limit, int) and limit > 0:
+                df = df.tail(limit)
+            history_json = df.to_json(orient="records", date_format="iso")
+            history = json.loads(history_json)
+            count = len(history)
+        else:
+            history = []
+            count = 0
+
+        response = {
+            "ticker": ticker,
+            "history": history,
+            "count": count,
+            "period": period,
+            "interval": interval,
+            "cached": False,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        history_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
 @app.get("/stocks/losers")
 def api_losers(limit: int = 10, region: str = "id"):
     """
@@ -187,6 +280,45 @@ def api_losers(limit: int = 10, region: str = "id"):
             "timestamp": datetime.now().isoformat(),
         }
 
+
+@app.get("/stocks/{ticker}")
+def api_stock_detail(ticker: str, period: str = "1mo", interval: str = "1d"):
+    """
+    Stock detail endpoint
+
+    Parameters:
+    - ticker: Stock ticker (e.g. BBCA.JK)
+    - period: History period (e.g. 1mo, 3mo, 1y)
+    - interval: Data interval (e.g. 1d, 1wk, 1mo)
+
+    Returns a JSON with company info and OHLCV history.
+    """
+    try:
+        if not ticker:
+            return {"error": "ticker is required", "status": "failed"}
+
+        t = yf.Ticker(ticker)
+
+        try:
+            raw_info = t.info or {}
+        except Exception:
+            raw_info = {}
+
+        # serialized full raw_info for return
+        serialized_raw = {k: _serialize_value(v) for k, v in raw_info.items()} if isinstance(raw_info, dict) else {}
+
+        return {
+            "ticker": ticker,
+            "raw_info": serialized_raw,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "failed",
+            "timestamp": datetime.now().isoformat(),
+        }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
