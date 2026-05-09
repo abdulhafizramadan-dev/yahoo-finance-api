@@ -487,30 +487,19 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
                 "timestamp": datetime.now().isoformat(),
             }
 
-        data = []
-        for idx, row in hist.iterrows():
-            open_val = float(row['Open'].iloc[0]) if hasattr(row['Open'], 'iloc') else float(row['Open'])
-            close_val = float(row['Close'].iloc[0]) if hasattr(row['Close'], 'iloc') else float(row['Close'])
-            high_val = float(row['High'].iloc[0]) if hasattr(row['High'], 'iloc') else float(row['High'])
-            low_val = float(row['Low'].iloc[0]) if hasattr(row['Low'], 'iloc') else float(row['Low'])
-            vol_val = int(row['Volume'].iloc[0]) if hasattr(row['Volume'], 'iloc') else int(row['Volume'])
+        if isinstance(hist, pd.DataFrame) and not hist.empty:
+            df = hist.reset_index()
 
-            change = close_val - open_val
-            change_percent = (change / open_val * 100) if open_val != 0 else 0
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
-            data.append({
-                "datetime": idx.strftime('%Y-%m-%d %H:%M:%S') if hasattr(idx, 'strftime') else str(idx),
-                "open": round(open_val, 2),
-                "high": round(high_val, 2),
-                "low": round(low_val, 2),
-                "close": round(close_val, 2),
-                "volume": vol_val if vol_val > 0 else 0,
-                "change": round(change, 2),
-                "changePercent": round(change_percent, 2),
-            })
+            if limit is not None and isinstance(limit, int) and limit > 0:
+                df = df.tail(limit)
 
-        if limit and limit > 0:
-            data = data[-limit:]
+            history_json = df.to_json(orient="records", date_format="iso")
+            data = json.loads(history_json)
+        else:
+            data = []
 
         index_info = _get_index_info(symbol)
 
