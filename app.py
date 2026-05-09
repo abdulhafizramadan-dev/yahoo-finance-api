@@ -1,15 +1,26 @@
 import math
 import json
+import os
 from datetime import datetime
 
 import pandas as pd
 import uvicorn
 import yfinance as yf
+import finnhub
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from yfinance import EquityQuery
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="Yahoo Finance API", version="0.1.0")
+
+finnhub_api_key = os.getenv("FINNHUB_API_KEY")
+if not finnhub_api_key:
+    raise ValueError("FINNHUB_API_KEY environment variable is required")
+
+finnhub_client = finnhub.Client(api_key=finnhub_api_key)
 
 ALLOWED_ORIGINS = [
     "http://localhost",
@@ -83,6 +94,7 @@ losers_cache = {}
 history_cache = {}
 news_cache = {}
 index_cache = {}
+news_highlighted_cache = {}
 
 
 def _safe_num(x):
@@ -98,33 +110,80 @@ def _safe_num(x):
 
 def _extract_news_item(raw_item: dict) -> dict:
     """Extract and normalize a news item from yfinance response"""
-    content = raw_item.get("content", {})
-    provider = content.get("provider", {})
-    urls = content.get("clickThroughUrl", {})
-    thumbnail = content.get("thumbnail", {})
-    finance = content.get("finance", {}).get("premiumFinance", {})
-    
-    thumbnail_urls = {}
-    if thumbnail.get("resolutions"):
-        for res in thumbnail["resolutions"]:
-            tag = res.get("tag", "")
-            thumbnail_urls[tag] = res.get("url")
-    
-    return {
-        "id": content.get("id"),
-        "title": content.get("title"),
-        "summary": content.get("summary"),
-        "datePublished": content.get("pubDate"),
-        "provider": {
-            "name": provider.get("displayName"),
-            "url": provider.get("url"),
-        },
-        "articleUrl": urls.get("url") if urls else None,
-        "thumbnail": thumbnail.get("originalUrl"),
-        "thumbnails": thumbnail_urls,
-        "isPremium": finance.get("isPremiumNews", False),
-        "isEditorsPick": content.get("metadata", {}).get("editorsPick", False),
-    }
+    try:
+        if not raw_item or not isinstance(raw_item, dict):
+            return None
+
+        content = raw_item.get("content")
+        if not content or not isinstance(content, dict):
+            return None
+
+        provider = content.get("provider") or {}
+        urls = content.get("clickThroughUrl") or {}
+        thumbnail = content.get("thumbnail") or {}
+        finance_obj = content.get("finance") or {}
+        finance = finance_obj.get("premiumFinance", {}) if isinstance(finance_obj, dict) else {}
+        metadata = content.get("metadata") or {}
+
+        thumbnail_urls = {}
+        if isinstance(thumbnail, dict) and thumbnail.get("resolutions"):
+            for res in thumbnail["resolutions"]:
+                if isinstance(res, dict):
+                    tag = res.get("tag", "")
+                    thumbnail_urls[tag] = res.get("url")
+
+        return {
+            "id": content.get("id"),
+            "title": content.get("title"),
+            "summary": content.get("summary"),
+            "datePublished": content.get("pubDate"),
+            "provider": {
+                "name": provider.get("displayName") if isinstance(provider, dict) else None,
+                "url": provider.get("url") if isinstance(provider, dict) else None,
+            },
+            "articleUrl": urls.get("url") if isinstance(urls, dict) and urls else None,
+            "thumbnail": thumbnail.get("originalUrl") if isinstance(thumbnail, dict) else None,
+            "thumbnails": thumbnail_urls,
+            "isPremium": finance.get("isPremiumNews", False) if isinstance(finance, dict) else False,
+            "isEditorsPick": metadata.get("editorsPick", False) if isinstance(metadata, dict) else False,
+        }
+    except Exception:
+        return None
+
+
+def _extract_finnhub_news(raw_item: dict) -> dict:
+    """Extract and normalize a news item from Finnhub API"""
+    try:
+        if not raw_item or not isinstance(raw_item, dict):
+            return None
+
+        timestamp = raw_item.get("datetime")
+        date_published = None
+        if timestamp:
+            try:
+                date_published = datetime.fromtimestamp(timestamp).isoformat() + "Z"
+            except (ValueError, OSError, TypeError):
+                date_published = None
+
+        return {
+            "id": raw_item.get("id"),
+            "title": raw_item.get("headline"),
+            "summary": raw_item.get("summary"),
+            "datePublished": date_published,
+            "provider": {
+                "name": raw_item.get("source"),
+                "url": raw_item.get("url"),
+            },
+            "articleUrl": raw_item.get("url"),
+            "thumbnail": raw_item.get("image"),
+            "thumbnails": {
+                "original": raw_item.get("image"),
+            },
+            "isPremium": False,
+            "isEditorsPick": False,
+        }
+    except Exception:
+        return None
 
 
 @app.get("/stocks/gainers")
@@ -396,7 +455,8 @@ def api_stock_news(ticker: str, count: int = 10, tab: str = "all"):
             cache_timestamps[cache_key] = datetime.now()
             return response
 
-        news = [_extract_news_item(item) for item in raw_news]
+        news = [_extract_news_item(item) for item in raw_news if item]
+        news = [item for item in news if item]
 
         response = {
             "news": news,
@@ -416,6 +476,85 @@ def api_stock_news(ticker: str, count: int = 10, tab: str = "all"):
             "error": str(e),
             "status": "failed",
             "ticker": ticker,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+@app.get("/news/highlighted")
+def api_news_highlighted(count: int = 10, min_id: int = 0):
+    """
+    Get highlighted/market news using Finnhub API with min_id pagination
+
+    Parameters:
+    - count: Number of news items to fetch (default: 10, max: 50)
+    - min_id: Minimum news ID for pagination (default: 0, fetches latest)
+      Use the last item's ID from previous request to fetch older news
+
+    Returns: {"news": [...], "count": 10, "source": "finnhub", "next_min_id": ID}
+    """
+    if count > 50:
+        count = 50
+    if count < 1:
+        count = 10
+    if min_id < 0:
+        min_id = 0
+
+    cache_key = f"news_highlighted_{count}_{min_id}"
+
+    if cache_key in news_highlighted_cache and is_cache_valid(cache_key, ttl_seconds=1800):
+        cached_response = news_highlighted_cache[cache_key].copy()
+        cached_response["cached"] = True
+        return cached_response
+
+    try:
+        news_list = []
+        last_item_id = 0
+
+        raw_news = finnhub_client.general_news('general', min_id=min_id)
+        if raw_news:
+            for item in raw_news:
+                if isinstance(item, dict):
+                    extracted = _extract_finnhub_news(item)
+                    if extracted:
+                        news_list.append(extracted)
+                    if "id" in item:
+                        last_item_id = item.get("id", 0)
+
+        paginated_news = news_list[:count]
+
+        if not paginated_news:
+            response = {
+                "news": [],
+                "count": 0,
+                "source": "finnhub",
+                "message": "No highlighted news available",
+                "timestamp": datetime.now().isoformat(),
+                "cached": False,
+            }
+            news_highlighted_cache[cache_key] = response
+            cache_timestamps[cache_key] = datetime.now()
+            return response
+
+        next_min_id = last_item_id if len(news_list) >= count else 0
+
+        response = {
+            "news": paginated_news,
+            "count": len(paginated_news),
+            "next_min_id": next_min_id,
+            "has_next": len(news_list) >= count,
+            "source": "finnhub",
+            "timestamp": datetime.now().isoformat(),
+            "cached": False,
+        }
+
+        news_highlighted_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "failed",
             "timestamp": datetime.now().isoformat(),
         }
 
