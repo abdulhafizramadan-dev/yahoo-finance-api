@@ -243,6 +243,7 @@ def api_gainers(limit: int = 10, region: str = "id"):
                 "ticker": q.get("symbol", "N/A"),
                 "name": q.get("shortName", "N/A"),
                 "price": q.get("regularMarketPrice", 0),
+                "change_value": round(q.get("regularMarketChange", 0), 2),
                 "change_percent": round(q.get("regularMarketChangePercent", 0), 2),
                 "volume": q.get("regularMarketVolume", 0),
                 "market_cap": q.get("marketCap", 0),
@@ -363,6 +364,7 @@ def api_losers(limit: int = 10, region: str = "id"):
                 "ticker": q.get("symbol", "N/A"),
                 "name": q.get("shortName", "N/A"),
                 "price": q.get("regularMarketPrice", 0),
+                "change_value": round(q.get("regularMarketChange", 0), 2),
                 "change_percent": round(q.get("regularMarketChangePercent", 0), 2),
                 "volume": q.get("regularMarketVolume", 0),
                 "market_cap": q.get("marketCap", 0),
@@ -760,6 +762,89 @@ def api_sectors_summary(region: str = "id"):
         return {
             "error": str(e),
             "status": "failed",
+            "region": region,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+SECTOR_KEY_MAP = {s["key"]: s for s in YAHOO_SECTORS}
+
+
+@app.get("/sectors/{sector_key}/stocks")
+def api_sector_stocks(sector_key: str, region: str = "id", limit: int = 50):
+    """
+    Get all stocks/tickers for a specific sector.
+
+    Parameters:
+    - sector_key: Sector key from YAHOO_SECTORS (e.g., "financial-services", "energy")
+    - region: Market region (default: "id" for Indonesia)
+    - limit: Number of stocks to return (default: 50, max: 100)
+
+    Returns: {"stocks": [...], "count": N, "sector": {...}, "region": "id"}
+    """
+    sector = SECTOR_KEY_MAP.get(sector_key)
+    if not sector:
+        return {
+            "error": f"Unknown sector key: '{sector_key}'",
+            "status": "failed",
+            "supported_keys": list(SECTOR_KEY_MAP.keys()),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    if limit > 100:
+        limit = 100
+    if limit < 1:
+        limit = 50
+
+    cache_key = f"sector_stocks_{sector_key}_{region}_{limit}"
+
+    if cache_key in sectors_cache and is_cache_valid(cache_key, ttl_seconds=300):
+        cached_response = sectors_cache[cache_key].copy()
+        cached_response["cached"] = True
+        return cached_response
+
+    try:
+        query = EquityQuery('and', [
+            EquityQuery('eq', ['region', region]),
+            EquityQuery('eq', ['sector', sector["name"]]),
+        ])
+        result = yf.screen(query, sortField='percentchange', sortAsc=False, size=limit)
+        quotes = result.get('quotes', []) if result else []
+
+        stocks = []
+        for q in quotes:
+            stocks.append({
+                "ticker": q.get("symbol", "N/A"),
+                "name": q.get("shortName", "N/A"),
+                "price": q.get("regularMarketPrice", 0),
+                "change_value": round(q.get("regularMarketChange", 0), 2),
+                "change_percent": round(q.get("regularMarketChangePercent", 0), 2),
+                "volume": q.get("regularMarketVolume", 0),
+                "market_cap": q.get("marketCap", 0),
+            })
+
+        response = {
+            "stocks": stocks,
+            "count": len(stocks),
+            "sector": {
+                "name": sector["name"],
+                "key": sector["key"],
+                "displayName": sector["displayName"],
+            },
+            "region": region,
+            "timestamp": datetime.now().isoformat(),
+            "cached": False,
+        }
+
+        sectors_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "failed",
+            "sector_key": sector_key,
             "region": region,
             "timestamp": datetime.now().isoformat(),
         }
