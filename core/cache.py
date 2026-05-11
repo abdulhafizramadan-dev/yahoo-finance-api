@@ -4,6 +4,8 @@ cache_timestamps: dict = {}
 
 gainers_cache: dict = {}
 losers_cache: dict = {}
+top_values_cache: dict = {}
+top_volumes_cache: dict = {}
 history_cache: dict = {}
 news_cache: dict = {}
 index_cache: dict = {}

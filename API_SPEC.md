@@ -10,6 +10,8 @@
 | GET | `/health` | API status | — |
 | GET | `/stocks/gainers` | Top gaining stocks | 5 min |
 | GET | `/stocks/losers` | Top losing stocks | 5 min |
+| GET | `/stocks/top-values` | Top stocks by transaction value (price × volume) | 5 min |
+| GET | `/stocks/top-volumes` | Top stocks by trade volume | 5 min |
 | GET | `/stocks/{ticker}` | Full stock info (`raw_info`) | 5 min |
 | GET | `/stocks/{ticker}/history` | OHLCV price history | 5 min |
 | GET | `/stocks/{ticker}/news` | Stock-specific news | 30 min |
@@ -26,7 +28,7 @@ Errors always return `{"error": "...", "status": "failed", "timestamp": "..."}`.
 
 ---
 
-## Stock Object (shared across gainers, losers, sector stocks)
+## Stock Object (shared across gainers, losers, top-volumes, sector stocks)
 ```json
 {
   "ticker": "BBCA.JK",
@@ -38,12 +40,20 @@ Errors always return `{"error": "...", "status": "failed", "timestamp": "..."}`.
   "market_cap": 718825993535488
 }
 ```
+> `/stocks/top-values` adds one extra field: `"transaction_value": float` (= `price × volume`, rounded to 2 decimals).
 
 ---
 
-## 1. GET `/stocks/gainers` & `/stocks/losers`
+## 1. GET `/stocks/gainers` & `/stocks/losers` & `/stocks/top-values` & `/stocks/top-volumes`
 **Params:** `limit` (int, 1–50, default 10) · `region` (str, default `"id"`)  
 **Response:** `{ "stocks": [Stock], "count": int, "region": str }`
+
+| Endpoint | Sort field | Order | Note |
+|----------|-----------|-------|------|
+| `/stocks/gainers` | `percentchange` | desc | |
+| `/stocks/losers` | `percentchange` | asc | |
+| `/stocks/top-values` | `transaction_value` | desc | Computed: `price × volume`. Fetches 200 stocks, re-sorts server-side. Response includes `transaction_value` field. |
+| `/stocks/top-volumes` | `dayvolume` | desc | |
 
 ---
 
@@ -150,6 +160,7 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 | Endpoint | Key pattern |
 |----------|-------------|
 | Gainers/Losers | `gainers_{region}_{limit}` / `losers_{region}_{limit}` |
+| Top Values/Volumes | `top_values_{region}_{limit}` / `top_volumes_{region}_{limit}` |
 | Stock History | `history_{ticker}_{period}_{interval}_{limit}` |
 | Stock News | `news_{ticker}_{count}_{tab}` |
 | Highlighted News | `news_highlighted_{count}_{min_id}` |
@@ -159,4 +170,4 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 
 ---
 
-*Last Updated: May 11, 2026*
+*Last Updated: May 12, 2026*

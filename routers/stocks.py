@@ -7,8 +7,8 @@ from fastapi import APIRouter
 from yfinance import EquityQuery
 
 from core.cache import (
-    gainers_cache, losers_cache, history_cache, news_cache,
-    cache_timestamps, is_cache_valid,
+    gainers_cache, losers_cache, top_values_cache, top_volumes_cache,
+    history_cache, news_cache, cache_timestamps, is_cache_valid,
 )
 from core.news_utils import extract_news_item
 from core.utils import serialize_value
@@ -88,6 +88,84 @@ def api_losers(limit: int = 10, region: str = "id"):
             "cached": False,
         }
         losers_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/top-values")
+def api_top_values(limit: int = 10, region: str = "id"):
+    cache_key = f"top_values_{region}_{limit}"
+    if cache_key in top_values_cache and is_cache_valid(cache_key):
+        cached = top_values_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        if limit > 50:
+            limit = 50
+
+        query = EquityQuery('and', [
+            EquityQuery('eq', ['region', region]),
+            EquityQuery('gt', ['dayvolume', 0]),
+        ])
+        result = yf.screen(query, sortField='dayvolume', sortAsc=False, size=200)
+        quotes = result.get('quotes', [])
+
+        stocks = []
+        for q in quotes:
+            price = q.get("regularMarketPrice") or 0
+            volume = q.get("regularMarketVolume") or 0
+            transaction_value = price * volume
+            stock = _build_stock(q)
+            stock["transaction_value"] = round(transaction_value, 2)
+            stocks.append(stock)
+
+        stocks.sort(key=lambda x: x["transaction_value"], reverse=True)
+        stocks = stocks[:limit]
+
+        response = {
+            "stocks": stocks,
+            "count": len(stocks),
+            "region": region,
+            "timestamp": datetime.now().isoformat(),
+            "cached": False,
+        }
+        top_values_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/top-volumes")
+def api_top_volumes(limit: int = 10, region: str = "id"):
+    cache_key = f"top_volumes_{region}_{limit}"
+    if cache_key in top_volumes_cache and is_cache_valid(cache_key):
+        cached = top_volumes_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        if limit > 50:
+            limit = 50
+
+        query = EquityQuery('and', [
+            EquityQuery('eq', ['region', region]),
+            EquityQuery('gt', ['dayvolume', 0]),
+        ])
+        result = yf.screen(query, sortField='dayvolume', sortAsc=False, size=limit)
+        quotes = result.get('quotes', [])
+
+        response = {
+            "stocks": [_build_stock(q) for q in quotes],
+            "count": len(quotes),
+            "region": region,
+            "timestamp": datetime.now().isoformat(),
+            "cached": False,
+        }
+        top_volumes_cache[cache_key] = response
         cache_timestamps[cache_key] = datetime.now()
         return response
     except Exception as e:
