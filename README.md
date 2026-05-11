@@ -11,17 +11,18 @@ A FastAPI backend for stock screening, price tracking, and market analysis using
 ## 🎯 Features
 
 ### Phase 1: MVP ⭐
-- ✅ Top gainers/losers
+- ✅ Top gainers/losers with absolute & percentage change
 - ✅ Stock price history (OHLCV) with intraday support
 - ✅ Market indices (IHSG/^JKSE with 1-minute charts)
-- ✅ Stock news feed
-- ✅ Search functionality
+- ✅ Stock news feed (via yfinance)
+- ✅ Highlighted market news (via Finnhub, with pagination)
+- ✅ Sector performance summary (11 sectors)
+- ✅ Sector stock listing (browse stocks by sector)
 - ✅ Health check endpoint
 
 ### Phase 2: Engagement 📲
 - 🔄 Watchlist management
 - 🔄 Portfolio tracker
-- 🔄 Sector-based screening
 - 🔄 Compare stocks
 
 ### Phase 3: Growth 🚀
@@ -35,17 +36,28 @@ A FastAPI backend for stock screening, price tracking, and market analysis using
 
 ```
 yahoo-finance-api/
-├── app.py                    # FastAPI application (primary)
-├── screener.py              # Fallback: Direct Yahoo API via curl_cffi
-├── API_SPEC.md              # API documentation for developers
-├── requirements.txt         # Python dependencies
+├── app.py                    # Entry point — FastAPI init + router registration
+├── config.py                 # Constants: ALLOWED_ORIGINS, YAHOO_SECTORS, Finnhub client
+├── requirements.txt          # Python dependencies
+│
+├── core/                     # Shared utilities (reusable across routers)
+│   ├── cache.py              # Cache dicts + is_cache_valid()
+│   ├── utils.py              # serialize_value(), safe_num()
+│   └── news_utils.py         # extract_news_item(), extract_finnhub_news()
+│
+├── routers/                  # Endpoint handlers (one file per domain)
+│   ├── stocks.py             # /stocks/* (gainers, losers, history, news, detail)
+│   ├── news.py               # /news/highlighted
+│   ├── index.py              # /index/{symbol}/history
+│   └── sectors.py            # /sectors/summary, /sectors/{key}/stocks
+│
+├── API_SPEC.md               # Full API documentation (v1.3)
 ```
 
 ### Technology Stack
 - **Framework:** FastAPI (Python)
-- **Data Source:** Yahoo Finance API (via yfinance)
-- **Caching:** In-memory (add Redis for production)
-- **HTTP Client:** yfinance + optional curl_cffi (TLS fingerprinting)
+- **Data Source:** Yahoo Finance (yfinance) + Finnhub (news)
+- **Caching:** In-memory per-router (add Redis for production)
 - **Deployment:** Render.com / Railway
 
 ---
@@ -55,7 +67,7 @@ yahoo-finance-api/
 ### Prerequisites
 - Python 3.9+
 - pip or poetry
-- (Optional) Redis for production caching
+- Finnhub API key (free at [finnhub.io](https://finnhub.io/register))
 
 ### Installation
 
@@ -69,6 +81,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Create .env file
+echo "FINNHUB_API_KEY=your_key_here" > .env
 ```
 
 ### Running Locally
@@ -82,7 +97,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 # Access API docs
 # Swagger UI: http://localhost:8000/docs
-# ReDoc: http://localhost:8000/redoc
+# ReDoc:      http://localhost:8000/redoc
 ```
 
 ### Testing API Endpoints
@@ -100,11 +115,20 @@ curl "http://localhost:8000/stocks/losers?limit=10"
 # Stock history (for charts)
 curl "http://localhost:8000/stocks/BBCA.JK/history?period=1mo&interval=1d"
 
-# Market index (IHSG)
-curl "http://localhost:8000/index/^JKSE/history?period=1d&interval=15m&limit=30"
+# Market index (IHSG intraday)
+curl "http://localhost:8000/index/^JKSE/history?period=2d&interval=15m&limit=30"
 
 # Stock news
 curl "http://localhost:8000/stocks/BBCA.JK/news?count=10"
+
+# Highlighted market news
+curl "http://localhost:8000/news/highlighted?count=10"
+
+# Sector performance summary
+curl "http://localhost:8000/sectors/summary?region=id"
+
+# Stocks in a specific sector
+curl "http://localhost:8000/sectors/financial-services/stocks?region=id&limit=20"
 ```
 
 ---
@@ -118,34 +142,57 @@ curl "http://localhost:8000/stocks/BBCA.JK/news?count=10"
 | `/health` | GET | API status | N/A |
 | `/stocks/gainers` | GET | Top gaining stocks | 5 min |
 | `/stocks/losers` | GET | Top losing stocks | 5 min |
-| `/stocks/{ticker}` | GET | Stock details | 5 min |
+| `/stocks/{ticker}` | GET | Stock details (raw_info) | 5 min |
 | `/stocks/{ticker}/history` | GET | Price history (OHLCV) | 5 min |
-| `/stocks/{ticker}/news` | GET | News feed | 30 min |
-| `/index/{symbol}/history` | GET | Market indices | 1 hour |
+| `/stocks/{ticker}/news` | GET | Stock news feed | 30 min |
+| `/news/highlighted` | GET | General market news (Finnhub) | 30 min |
+| `/index/{symbol}/history` | GET | Market index OHLCV | 1 hour |
+| `/sectors/summary` | GET | All sectors % change today | 5 min |
+| `/sectors/{sector_key}/stocks` | GET | Stocks in a sector | 5 min |
 
-**Full API Spec:** See `API_SPEC.md` (883 lines, detailed contracts)
+**Full API Spec:** See `API_SPEC.md` (v1.3, detailed contracts)
 
 ### Example Request/Response
 
 ```bash
 # Request
 GET /stocks/gainers?limit=5
+```
 
-# Response
+```json
 {
   "stocks": [
     {
-      "ticker": "BBCA.JK",
-      "name": "PT Bank Central Asia Tbk",
-      "price": 5850.0,
-      "change_percent": 2.50,
-      "volume": 303405400,
-      "market_cap": 718825993535488
+      "ticker": "RMKE.JK",
+      "name": "RMK Energy Tbk.",
+      "price": 3370.0,
+      "change_value": 200.0,
+      "change_percent": 6.31,
+      "volume": 30017300,
+      "market_cap": 14743750311936
     }
   ],
   "count": 5,
   "region": "id",
-  "timestamp": "2026-05-07T10:30:00.123456",
+  "timestamp": "2026-05-11T10:30:00.123456",
+  "cached": false
+}
+```
+
+```bash
+# Request
+GET /sectors/summary?region=id
+```
+
+```json
+{
+  "sectors": [
+    { "name": "Healthcare", "key": "healthcare", "displayName": "HEALTH", "change_percent": 2.44, "stock_count": 38, "direction": "up" },
+    { "name": "Industrials", "key": "industrials", "displayName": "INDUSTRIAL", "change_percent": 0.97, "stock_count": 100, "direction": "up" },
+    { "name": "Energy", "key": "energy", "displayName": "ENERGY", "change_percent": -1.53, "stock_count": 56, "direction": "down" }
+  ],
+  "count": 11,
+  "region": "id",
   "cached": false
 }
 ```
@@ -156,39 +203,32 @@ GET /stocks/gainers?limit=5
 
 ### Environment Variables
 
-Create `.env` file (not included in repo for security):
+Create `.env` file (not committed to repo):
 
 ```env
-# Development
-API_ENV=development
-BASE_URL=http://localhost:8000
-
-# Production
-API_ENV=production
-BASE_URL=https://your-api.onrender.com
-
-# CORS
-ALLOWED_ORIGINS=http://localhost:3000,https://yourdomain.com
-
-# Cache (optional for production)
-REDIS_URL=redis://localhost:6379
+FINNHUB_API_KEY=your_finnhub_api_key_here
 ```
+
+Get a free key at [finnhub.io/register](https://finnhub.io/register) (60 req/min free tier).
 
 ### Caching Strategy
 
 **Current (Development):**
-- In-memory cache only
+- In-memory cache per router module
 - Lost on server restart
-- TTL per endpoint:
-  - Gainers/Losers: 5 min
-  - History: 5 min
-  - News: 30 min
-  - Indices: 1 hour
+- TTL per endpoint type:
+
+| Endpoint | TTL |
+|----------|-----|
+| Gainers / Losers | 5 min |
+| Stock History | 5 min |
+| Sectors Summary / Stocks | 5 min |
+| Stock / Market News | 30 min |
+| Index History | 1 hour |
 
 **Recommended (Production):**
-- Use Redis for distributed cache
-- Add cache layer: `pip install redis`
-- Update cache logic in `app.py`
+- Migrate to Redis for distributed cache
+- Add `pip install redis` and update `core/cache.py`
 
 ---
 
@@ -198,23 +238,36 @@ REDIS_URL=redis://localhost:6379
 - `id` - Indonesia (default)
 - `us` - United States
 - `jp` - Japan
-- (See `APP_STRATEGY.md` for full list)
+- Any Yahoo Finance region code
 
 ### Common Data Patterns
 
-**Home Screen:**
-```python
-# Load in parallel
-gainers = GET /stocks/gainers?limit=10
-losers = GET /stocks/losers?limit=10
-index = GET /index/^JKSE/history?period=1d&interval=15m&limit=30
+**Home Screen (parallel requests):**
+```bash
+GET /stocks/gainers?limit=10
+GET /stocks/losers?limit=10
+GET /index/^JKSE/history?period=2d&interval=15m&limit=30
+GET /sectors/summary?region=id
 ```
 
-**Stock Detail Screen:**
-```python
-info = GET /stocks/{ticker}
-history = GET /stocks/{ticker}/history?period=1mo&interval=1d
-news = GET /stocks/{ticker}/news?count=10
+**Stock Detail Screen (parallel requests):**
+```bash
+GET /stocks/{ticker}
+GET /stocks/{ticker}/history?period=1mo&interval=1d
+GET /stocks/{ticker}/news?count=10
+```
+
+**Sector Browse Flow (sequential):**
+```bash
+GET /sectors/summary?region=id           # User sees sector cards
+GET /sectors/{sector_key}/stocks         # User taps a sector
+GET /stocks/{ticker}                     # User taps a stock
+```
+
+**News Feed with Pagination:**
+```bash
+GET /news/highlighted?count=10           # First page
+GET /news/highlighted?count=10&min_id=X  # Next page (use next_min_id from response)
 ```
 
 ---
@@ -223,104 +276,60 @@ news = GET /stocks/{ticker}/news?count=10
 
 ### Rate Limits
 - **yfinance:** ~10-20 req/min (may get blocked)
-- **curl_cffi (screener.py):** ~100-200 req/min (TLS fingerprinting)
+- **Finnhub (free tier):** ~60 req/min
 - **Recommended:** Use caching + reasonable request intervals
 
 ### Optimization Tips
-1. **Cache aggressively** - Most users want slightly delayed data
-2. **Batch requests** - Load multiple endpoints in parallel
-3. **Pagination** - Show 10 items initially, lazy load more
-4. **Preload on launch** - Fetch data while splash screen visible
+1. **Cache aggressively** — Most users want slightly delayed data
+2. **Batch requests** — Load multiple endpoints in parallel
+3. **`/sectors/summary` is slow** — Makes 11 upstream calls on first load (~5-8s). Always rely on cache after first hit.
+4. **Pagination** — Use `min_id` for news, `limit` for stock lists
 
 ### Known Issues
 - **429 Errors:** Yahoo Finance rate limiting. Use exponential backoff
 - **Empty data:** Market might be closed or invalid ticker
-- **Intraday data:** ^JKSE requires period≥2d (use `period=2d&interval=15m`)
+- **Intraday index data:** `^JKSE` requires `period≥2d` (use `period=2d&interval=15m`)
 
 ---
 
-## 🎨 Design & UI
+## 🛠️ Development Workflow
 
-### Figma Design
-- **File:** `FIGMA_DESIGN_SPEC.md`
-- **Platform:** Android (Jetpack Compose + Material Design 3)
-- **Modes:** Light & Dark (automatic switching)
-- **Components:** Pre-designed for all screens
+### Adding a New Endpoint
 
-### Screens
-1. **Home** - Gainers, Losers, Index chart
-2. **Stock Detail** - Info, chart, news feed
-3. **Search** - Quick stock lookup
-4. **Watchlist** - Saved stocks
-5. **Settings** - Theme toggle
+1. **Decide which router** the endpoint belongs to (`routers/stocks.py`, `routers/sectors.py`, etc.)
+2. **Add a cache dict** in `core/cache.py` if needed
+3. **Write the handler** in the appropriate router file using existing patterns
+4. **Register** via `app.include_router()` in `app.py` (already done for existing routers)
+5. **Test via `/docs`** Swagger UI
 
----
+### Example Pattern (inside any router file)
 
-## 📖 Documentation Files
-
-| File | Purpose | Size |
-|------|---------|------|
-| `API_SPEC.md` | Complete API reference | 883 lines |
-| `FIGMA_DESIGN_SPEC.md` | UI/UX specifications | 751 lines |
-| `APP_STRATEGY.md` | Product roadmap | 825 lines |
-| `AGENTS.md` | AI agent guide | 40 lines |
-| `DEPLOYMENT.md` | Render deployment | (if exists) |
-
----
-
-## 🚦 Deployment
-
-### Local Development
-```bash
-python app.py
-```
-
-### Render.com (Recommended for MVP)
-1. Connect GitHub repo
-2. Set start command: `uvicorn app:app --host 0.0.0.0 --port 8000`
-3. Add environment variables (if using .env)
-4. Deploy
-
-**Health Check URL:** `https://your-app.onrender.com/health`
-
-### Railway / AWS / DigitalOcean
-- Similar setup (see `DEPLOYMENT.md` if available)
-- Just need Python 3.9+ and pip
-
----
-
-## 🔄 Development Workflow
-
-### Adding New Endpoint
-
-1. **Create handler function** in `app.py`
-2. **Add cache dict** at top: `new_cache = {}`
-3. **Check cache** before fetching
-4. **Call yfinance API**
-5. **Store in cache** with timestamp
-6. **Return response** in standardized format
-7. **Test via `/docs`** Swagger UI
-
-### Example Pattern
 ```python
-@app.get("/stocks/example")
+from core.cache import my_cache, cache_timestamps, is_cache_valid
+
+@router.get("/example")
 def api_example(param: str = "default"):
     cache_key = f"example_{param}"
-    
-    if cache_key in example_cache and is_cache_valid(cache_key):
-        cached = example_cache[cache_key].copy()
+
+    if cache_key in my_cache and is_cache_valid(cache_key):
+        cached = my_cache[cache_key].copy()
         cached["cached"] = True
         return cached
-    
+
     try:
-        result = yf.screen(...)  # Your logic
-        response = {"data": result, "cached": False}
-        example_cache[cache_key] = response
+        result = yf.screen(...)  # your logic
+        response = {"data": result, "cached": False, "timestamp": datetime.now().isoformat()}
+        my_cache[cache_key] = response
         cache_timestamps[cache_key] = datetime.now()
         return response
     except Exception as e:
-        return {"error": str(e), "status": "failed"}
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
 ```
+
+### Adding a New Sector / Index
+
+- **New sector:** Add entry to `YAHOO_SECTORS` in `config.py` — all routers pick it up automatically
+- **New index:** Add entry to `INDEX_INFO_MAP` and `SUPPORTED_INDICES` in `config.py`
 
 ---
 
@@ -328,109 +337,81 @@ def api_example(param: str = "default"):
 
 ### "ModuleNotFoundError: No module named 'yfinance'"
 ```bash
-pip install yfinance
 pip install -r requirements.txt
 ```
 
+### "FINNHUB_API_KEY environment variable is required"
+```bash
+echo "FINNHUB_API_KEY=your_key_here" > .env
+```
+
 ### "429 Too Many Requests"
-- Use server-side cache (already implemented)
+- Server-side cache already handles most cases
 - Reduce request frequency
-- Switch to `screener.py` for higher limits
-- Add exponential backoff
+- Add exponential backoff on the client
 
 ### "No data available for ticker"
-- Check if market is open (9:00-15:30 WIB for IDX)
-- Verify ticker format (e.g., `BBCA.JK` not `BBCA`)
-- Try different ticker or region
+- Verify market hours: 09:00–15:30 WIB for IDX
+- Check ticker format: use `BBCA.JK` not `BBCA`
+- Try a different period
 
-### Chart data is empty
-- For intraday: use `period=2d` or higher
-- For daily: use `period=5d` or higher
-- Check if data exists for that ticker/period
+### Chart data is empty for index
+- Use `period=2d` minimum for intraday (`1m`, `5m`, `15m`, `1h`) on `^JKSE`
+
+---
+
+## 🚦 Deployment
+
+### Render.com (Recommended for MVP)
+1. Connect GitHub repo
+2. Set start command: `uvicorn app:app --host 0.0.0.0 --port 8000`
+3. Add environment variable: `FINNHUB_API_KEY=your_key`
+4. Deploy
+
+**Health Check URL:** `https://your-app.onrender.com/health`
 
 ---
 
 ## 📋 Checklist Before Launch
 
 - [ ] Health endpoint working
-- [ ] Gainers/Losers returning data
-- [ ] Index chart (^JKSE) working
+- [ ] Gainers/Losers returning data with `change_value`
+- [ ] Index chart (^JKSE) working with `period=2d`
 - [ ] Stock news fetching data
-- [ ] Cache working (5-30 min TTL)
-- [ ] Error handling for all scenarios
+- [ ] Highlighted news (Finnhub) fetching with pagination
+- [ ] Sectors summary returning all 11 sectors
+- [ ] Sector stocks returning correct stocks for a key
+- [ ] Cache working (second request shows `cached: true`)
+- [ ] Error handling for invalid ticker/sector key
 - [ ] CORS enabled for frontend domain
-- [ ] Rate limiting handled gracefully
 - [ ] Deployed to Render/Railway
-- [ ] API docs accessible (`/docs`)
+- [ ] API docs accessible at `/docs`
 
 ---
 
-## 🤝 Contributing
+## 📖 Documentation Files
 
-### To Add Features
-1. Create feature branch: `git checkout -b feature/new-endpoint`
-2. Update `API_SPEC.md` first (API-first design)
-3. Implement in `app.py`
-4. Test via `/docs`
-5. Update this README if needed
-6. Commit with clear message
-
-### Stack for Pull Requests
-- Branch name: `feature/short-description`
-- Commit message: `Add {feature} endpoint`
-- Include API changes in PR description
-
----
-
-## 📞 Support & Contact
-
-- **API Issues:** Check `API_SPEC.md` for contract details
-- **Design Questions:** See `FIGMA_DESIGN_SPEC.md`
-- **Feature Ideas:** Reference `APP_STRATEGY.md`
-- **Deployment Help:** Review `DEPLOYMENT.md`
-
----
-
-## 📝 License
-
-This project is for educational and commercial use. Ensure compliance with Yahoo Finance Terms of Service.
-
----
-
-## 🎯 Roadmap
-
-### Current Status (May 2026)
-✅ MVP complete (7 endpoints)  
-✅ Caching implemented  
-✅ Index history with intraday support  
-✅ News integration  
-
-### Next (Phase 2)
-🔄 Multi-region support  
-🔄 Watchlist backend  
-🔄 Portfolio tracker  
-🔄 News search/filtering  
-
-### Future (Phase 3)
-⏳ Price alerts  
-⏳ Technical indicators  
-⏳ Social features  
-⏳ AI recommendations  
+| File | Purpose |
+|------|---------|
+| `API_SPEC.md` | Complete API reference (v1.3, 10 endpoints) |
+| `FIGMA_DESIGN_SPEC.md` | Mobile UI/UX specification |
+| `APP_STRATEGY.md` | Product roadmap |
+| `AGENTS.md` | AI agent developer guide |
 
 ---
 
 ## 📊 Quick Stats
 
-- **API Endpoints:** 7
-- **Supported Indices:** 10+
-- **Regions Supported:** 10+
-- **Cache Layers:** 3 (in-memory)
-- **Response Time:** <500ms (cached), ~1-2s (uncached)
-- **Uptime Target:** 99%
+- **API Endpoints:** 10
+- **Supported Indices:** 10
+- **Supported Sectors:** 11
+- **Regions Supported:** Any Yahoo Finance region code
+- **News Sources:** Yahoo Finance + Finnhub
+- **Cache Layers:** Per-router in-memory (5 dicts)
+- **Response Time:** <500ms (cached), ~1–3s (uncached), ~5–8s (sectors/summary first load)
 
 ---
 
 **Built with ❤️ for the Indonesian stock market community.**
 
-*Last Updated: May 7, 2026*
-
+*Last Updated: May 11, 2026*
