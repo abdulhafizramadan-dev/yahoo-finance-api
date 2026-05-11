@@ -55,7 +55,9 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 
 ## 3. GET `/stocks/{ticker}/history`
 **Params:** `period` (default `1mo`) · `interval` (default `1d`) · `limit` (optional, latest N)  
-**Response:** `{ "ticker", "history": [{ "Date", "Open", "High", "Low", "Close", "Volume" }], "count", "period", "interval" }`
+**Response:** `{ "ticker", "previous_close": float|null, "history": [{ "Date"|"Datetime", "Open", "High", "Low", "Close", "Volume" }], "count", "period", "interval" }`
+
+> The **first element** of `history` is a synthetic data point with all OHLC values set to `previous_close` and `Volume: 0`, timestamped 1 minute before the first real candle. This means `baselineValue = history.firstOrNull()?.close` works correctly for gap-up/gap-down scenarios without any special handling on the client.
 
 ---
 
@@ -90,7 +92,9 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 
 ## 6. GET `/index/{symbol}/history`
 **Params:** `period` (default `1d`) · `interval` (default `1m`) · `limit` (optional)  
-**Response:** `{ "index": { "symbol", "name", "country", "currency" }, "data": [{ "Datetime", "Open", "High", "Low", "Close", "Volume" }], "count", "period", "interval" }`
+**Response:** `{ "index": { "symbol", "name", "country", "currency" }, "previous_close": float|null, "data": [{ "Datetime"|"Date", "Open", "High", "Low", "Close", "Volume" }], "count", "period", "interval" }`
+
+> First element of `data` is a synthetic point with all OHLC = `previous_close`, `Volume: 0`, timestamped 1 minute before the first real candle — same pattern as `/stocks/{ticker}/history`.
 
 **Supported symbols:** `^JKSE` (Indonesia), `^GSPC`, `^DJI`, `^IXIC`, `^N225`, `^HSI`, `^BVSP`, `^FTSE`, `^FCHI`, `^GDAXI`
 

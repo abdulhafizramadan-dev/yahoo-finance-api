@@ -106,19 +106,42 @@ def api_stock_history(ticker: str, period: str = "1mo", interval: str = "1d", li
         if not ticker:
             return {"error": "ticker is required", "status": "failed"}
 
-        hist = yf.Ticker(ticker).history(period=period, interval=interval)
+        t = yf.Ticker(ticker)
+        hist = t.history(period=period, interval=interval)
+
+        previous_close = None
+        try:
+            previous_close = t.fast_info.get("previousClose") or t.fast_info.get("regular_market_previous_close")
+        except Exception:
+            pass
 
         if isinstance(hist, pd.DataFrame) and not hist.empty:
             df = hist.reset_index()
             if limit is not None and isinstance(limit, int) and limit > 0:
                 df = df.tail(limit)
             history = json.loads(df.to_json(orient="records", date_format="iso"))
+
+            if previous_close and history:
+                date_key = "Datetime" if "Datetime" in history[0] else "Date"
+                first_ts = pd.Timestamp(history[0][date_key])
+                prev_ts = (first_ts - pd.Timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                synthetic = {
+                    date_key: prev_ts,
+                    "Open": previous_close,
+                    "High": previous_close,
+                    "Low": previous_close,
+                    "Close": previous_close,
+                    "Volume": 0,
+                }
+                history = [synthetic] + history
+
             count = len(history)
         else:
             history, count = [], 0
 
         response = {
             "ticker": ticker,
+            "previous_close": previous_close,
             "history": history,
             "count": count,
             "period": period,

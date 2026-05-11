@@ -43,6 +43,12 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
         if hist.empty:
             return {"error": f"No data available for {symbol}", "status": "failed", "timestamp": datetime.now().isoformat()}
 
+        previous_close = None
+        try:
+            previous_close = yf.Ticker(symbol).fast_info.get("previousClose") or yf.Ticker(symbol).fast_info.get("regular_market_previous_close")
+        except Exception:
+            pass
+
         df = hist.reset_index()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -50,6 +56,20 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
             df = df.tail(limit)
 
         data = json.loads(df.to_json(orient="records", date_format="iso"))
+
+        if previous_close and data:
+            date_key = "Datetime" if "Datetime" in data[0] else "Date"
+            first_ts = pd.Timestamp(data[0][date_key])
+            prev_ts = (first_ts - pd.Timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            synthetic = {
+                date_key: prev_ts,
+                "Open": previous_close,
+                "High": previous_close,
+                "Low": previous_close,
+                "Close": previous_close,
+                "Volume": 0,
+            }
+            data = [synthetic] + data
         index_info = INDEX_INFO_MAP.get(symbol, {"name": "Unknown Index", "country": "N/A", "currency": "N/A"})
 
         response = {
@@ -59,6 +79,7 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
                 "country": index_info.get("country"),
                 "currency": index_info.get("currency"),
             },
+            "previous_close": previous_close,
             "period": period,
             "interval": interval,
             "data": data,
