@@ -133,7 +133,7 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 ---
 
 ## 8. GET `/sectors/{sector_key}/stocks`
-**Params:** `region` (default `"id"`) · `limit` (1–100, default 50)  
+**Params:** `region` (default `"id"`)  
 **Response:** `{ "stocks": [Stock], "count", "sector": { "name", "key", "displayName" }, "region" }`  
 **Invalid key error:** includes `"supported_keys": [...]`
 
@@ -166,8 +166,8 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 | Highlighted News | `news_highlighted_{count}_{min_id}` |
 | Index History | `index_{symbol}_{period}_{interval}_{limit}` |
 | Sectors Summary | `sectors_{region}` |
-| Sector Stocks | `sector_stocks_{sector_key}_{region}_{limit}` |
+| Sector Stocks | `sector_stocks_{sector_key}_{region}` |
 
 ---
 
-*Last Updated: May 12, 2026*
+*Last Updated: May 14, 2026*

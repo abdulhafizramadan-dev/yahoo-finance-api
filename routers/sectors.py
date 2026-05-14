@@ -39,7 +39,7 @@ def api_sectors_summary(region: str = "id"):
                     EquityQuery('eq', ['region', region]),
                     EquityQuery('eq', ['sector', sector["name"]]),
                 ])
-                result = yf.screen(query, sortField='percentchange', sortAsc=False, size=100)
+                result = yf.screen(query, sortField='percentchange', sortAsc=False, size=250)
                 quotes = result.get('quotes', []) if result else []
 
                 changes = [
@@ -81,7 +81,7 @@ def api_sectors_summary(region: str = "id"):
 
 
 @router.get("/{sector_key}/stocks")
-def api_sector_stocks(sector_key: str, region: str = "id", limit: int = 50):
+def api_sector_stocks(sector_key: str, region: str = "id"):
     sector = SECTOR_KEY_MAP.get(sector_key)
     if not sector:
         return {
@@ -91,12 +91,7 @@ def api_sector_stocks(sector_key: str, region: str = "id", limit: int = 50):
             "timestamp": datetime.now().isoformat(),
         }
 
-    if limit > 100:
-        limit = 100
-    if limit < 1:
-        limit = 50
-
-    cache_key = f"sector_stocks_{sector_key}_{region}_{limit}"
+    cache_key = f"sector_stocks_{sector_key}_{region}"
     if cache_key in sectors_cache and is_cache_valid(cache_key, ttl_seconds=300):
         cached = sectors_cache[cache_key].copy()
         cached["cached"] = True
@@ -107,7 +102,7 @@ def api_sector_stocks(sector_key: str, region: str = "id", limit: int = 50):
             EquityQuery('eq', ['region', region]),
             EquityQuery('eq', ['sector', sector["name"]]),
         ])
-        result = yf.screen(query, sortField='percentchange', sortAsc=False, size=limit)
+        result = yf.screen(query, sortField='percentchange', sortAsc=False, size=250)
         quotes = result.get('quotes', []) if result else []
 
         response = {
