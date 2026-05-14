@@ -187,6 +187,9 @@ def api_stock_history(ticker: str, period: str = "1mo", interval: str = "1d", li
         t = yf.Ticker(ticker)
         hist = t.history(period=period, interval=interval)
 
+        if (hist is None or (isinstance(hist, pd.DataFrame) and hist.empty)) and period == "1d":
+            hist = t.history(period="2d", interval=interval)
+
         previous_close = None
         try:
             previous_close = t.fast_info.get("previousClose") or t.fast_info.get("regular_market_previous_close")
@@ -199,7 +202,7 @@ def api_stock_history(ticker: str, period: str = "1mo", interval: str = "1d", li
                 df = df.tail(limit)
             history = json.loads(df.to_json(orient="records", date_format="iso"))
 
-            if previous_close and history:
+            if previous_close and history and period == "1d":
                 date_key = "Datetime" if "Datetime" in history[0] else "Date"
                 first_ts = pd.Timestamp(history[0][date_key])
                 prev_ts = (first_ts - pd.Timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")

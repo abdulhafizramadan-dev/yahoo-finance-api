@@ -32,11 +32,14 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
 
         hist = yf.download(symbol, period=period, interval=interval, progress=False)
 
-        if hist.empty and interval in ["1m", "5m", "15m", "1h"] and period == "1d":
+        if hist.empty and period == "1d":
+            hist = yf.download(symbol, period="2d", interval=interval, progress=False)
+
+        if hist.empty and interval in ["1m", "5m", "15m", "1h"]:
             return {
-                "error": f"{symbol} does not support {interval} interval with period=1d",
+                "error": f"{symbol} does not support {interval} interval with period=1d or 2d",
                 "status": "failed",
-                "suggestion": f"Try: /index/{symbol}/history?period=2d&interval={interval} (minimum period for intraday is 2d)",
+                "suggestion": f"Try: /index/{symbol}/history?period=5d&interval={interval}",
                 "timestamp": datetime.now().isoformat(),
             }
 
