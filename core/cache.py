@@ -11,6 +11,11 @@ news_cache: dict = {}
 index_cache: dict = {}
 news_highlighted_cache: dict = {}
 sectors_cache: dict = {}
+stock_detail_cache: dict = {}
+keystats_cache: dict = {}
+analysis_cache: dict = {}
+financials_cache: dict = {}
+profile_cache: dict = {}
 
 
 def is_cache_valid(key: str, ttl_seconds: int = 300) -> bool:

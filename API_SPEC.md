@@ -13,6 +13,10 @@
 | GET | `/stocks/top-values` | Top stocks by transaction value (price × volume) | 5 min |
 | GET | `/stocks/top-volumes` | Top stocks by trade volume | 5 min |
 | GET | `/stocks/{ticker}` | Full stock info (`raw_info`) | 5 min |
+| GET | `/stocks/{ticker}/keystats` | Key statistics: valuation, per-share, financials, dividend, price performance | 15 min |
+| GET | `/stocks/{ticker}/analysis` | Analyst recommendations, price targets, estimates | 24 hr |
+| GET | `/stocks/{ticker}/financials` | Full income statement, balance sheet, cash flow (annual + quarterly) | 24 hr |
+| GET | `/stocks/{ticker}/profile` | Company profile, address, overview, ownership, officers | 24 hr |
 | GET | `/stocks/{ticker}/history` | OHLCV price history | 5 min |
 | GET | `/stocks/{ticker}/news` | Stock-specific news | 30 min |
 | GET | `/news/highlighted` | General market news (Finnhub) | 30 min |
@@ -22,7 +26,7 @@
 
 ---
 
-## Common Response Fields
+## Common Response Fields   
 All responses include `"cached": bool` and `"timestamp": ISO8601`.  
 Errors always return `{"error": "...", "status": "failed", "timestamp": "..."}`.
 
@@ -60,6 +64,96 @@ Errors always return `{"error": "...", "status": "failed", "timestamp": "..."}`.
 ## 2. GET `/stocks/{ticker}`
 **Response:** `{ "ticker": str, "raw_info": { ...full yfinance info dict... } }`  
 Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularMarketChangePercent`, `marketCap`, `sector`, `industry`, `fiftyTwoWeekHigh`, `fiftyTwoWeekLow`, `trailingPE`, `dividendYield`.
+
+---
+
+## 2a. GET `/stocks/{ticker}/keystats`
+**Response:** Structured key statistics grouped by category.
+
+```json
+{
+  "ticker": "BBCA.JK",
+  "valuation": { "currentPrice", "marketCap", "enterpriseValue", "trailingPE", "forwardPE", "priceToBook", "priceToSales", "beta", "volume", ... },
+  "per_share": { "trailingEps", "forwardEps", "bookValue", "revenuePerShare", "totalCashPerShare" },
+  "financial_summary": { "totalRevenue", "revenueGrowth", "grossMargins", "operatingMargins", "profitMargins", "ebitda", "totalCash", "totalDebt", "debtToEquity", "returnOnAssets", "returnOnEquity", "freeCashflow", ... },
+  "dividend": { "dividendRate", "dividendYield", "trailingAnnualDividendRate", "exDividendDate", "payoutRatio", "history": [{"date", "amount"}] },
+  "price_performance": { "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "allTimeHigh", "allTimeLow", "fiftyDayAverage", "twoHundredDayAverage", "fiftyTwoWeekChange", ... }
+}
+```
+
+---
+
+## 2b. GET `/stocks/{ticker}/analysis`
+**Response:** Analyst data — all list fields are `null` if no analyst coverage exists for the ticker.
+
+All estimate/trend tables are returned as **lists of records** (one object per time period), making them easy to iterate and render as tables.
+
+```json
+{
+  "ticker": "GOTO.JK",
+  "recommendation": { "key": "buy", "mean": 1.61, "numberOfAnalysts": 22 },
+  "price_targets": { "current": 50.0, "low": 60.0, "high": 120.0, "mean": 82.0, "median": 79.5 },
+  "recommendations_trend": [
+    { "period": "0m", "strongBuy": 4, "buy": 14, "hold": 5, "sell": 0, "strongSell": 0 },
+    { "period": "-1m", "strongBuy": 4, "buy": 15, "hold": 5, "sell": 0, "strongSell": 0 }
+  ],
+  "earnings_estimate": [
+    { "period": "0q", "avg": 0.52, "low": 0.52, "high": 0.52, "yearAgoEps": -0.28, "numberOfAnalysts": 1, "growth": 2.86, "currency": "IDR" },
+    { "period": "+1q", ... }, { "period": "0y", ... }, { "period": "+1y", ... }
+  ],
+  "revenue_estimate": [
+    { "period": "0q", "avg": 5382000000000, "low": ..., "high": ..., "numberOfAnalysts": 1, "yearAgoRevenue": ..., "growth": 0.24, "currency": "IDR" }
+  ],
+  "earnings_history": [
+    { "date": "2025-06-30", "epsActual": -0.28, "epsEstimate": -0.25, "epsDifference": -0.03, "surprisePercent": -0.12 }
+  ],
+  "eps_trend": [
+    { "period": "0q", "current": 0.52, "7daysAgo": 0.39, "30daysAgo": 0.39, "60daysAgo": 0.29, "90daysAgo": 0.0, "currency": "IDR" }
+  ],
+  "eps_revisions": [
+    { "period": "0q", "upLast7days": 1, "upLast30days": 1, "downLast30days": 0, "downLast7Days": 0, "currency": "IDR" }
+  ],
+  "growth_estimates": [
+    { "period": "0q", "stockTrend": null, "indexTrend": 0.2485 },
+    { "period": "LTG", "stockTrend": null, "indexTrend": 0.122 }
+  ]
+}
+```
+
+**Period codes:** `0q` = current quarter · `+1q` = next quarter · `0y` = current year · `+1y` = next year · `LTG` = long-term growth
+
+---
+
+## 2c. GET `/stocks/{ticker}/financials`
+**Response:** Full financial statements (annual and quarterly). Each section uses `{"periods": ["YYYY-MM-DD", ...], "data": {"MetricName": [values...]}}`.
+
+```json
+{
+  "ticker": "BBCA.JK",
+  "income_statement": { "annual": { "periods": [...], "data": {...} }, "quarterly": { ... } },
+  "balance_sheet":    { "annual": { "periods": [...], "data": {...} }, "quarterly": { ... } },
+  "cash_flow":        { "annual": { "periods": [...], "data": {...} }, "quarterly": { ... } }
+}
+```
+
+> `null` is returned for any section where data is unavailable.
+
+---
+
+## 2d. GET `/stocks/{ticker}/profile`
+**Response:** Company profile and governance data.
+
+```json
+{
+  "ticker": "BBCA.JK",
+  "company": { "name", "shortName", "symbol", "exchange", "market", "currency", "quoteType", "ipoDate", "fullTimeEmployees" },
+  "address": { "address1", "address2", "city", "state", "zip", "country", "phone", "fax", "website" },
+  "overview": { "sector", "sectorKey", "industry", "industryKey", "description" },
+  "ownership": { "heldPercentInsiders", "heldPercentInstitutions", "sharesOutstanding", "floatShares" },
+  "governance": { "auditRisk", "boardRisk", "compensationRisk", "shareHolderRightsRisk", "overallRisk" },
+  "officers": [ { "name", "title", "age", "totalPay", ... } ]
+}
+```
 
 ---
 
@@ -161,6 +255,11 @@ Key fields in `raw_info`: `regularMarketPrice`, `regularMarketChange`, `regularM
 |----------|-------------|
 | Gainers/Losers | `gainers_{region}_{limit}` / `losers_{region}_{limit}` |
 | Top Values/Volumes | `top_values_{region}_{limit}` / `top_volumes_{region}_{limit}` |
+| Stock Detail | `stock_detail_{ticker}` |
+| Stock Key Stats | `keystats_{ticker}` |
+| Stock Analysis | `analysis_{ticker}` |
+| Stock Financials | `financials_{ticker}` |
+| Stock Profile | `profile_{ticker}` |
 | Stock History | `history_{ticker}_{period}_{interval}_{limit}` |
 | Stock News | `news_{ticker}_{count}_{tab}` |
 | Highlighted News | `news_highlighted_{count}_{min_id}` |

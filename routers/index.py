@@ -31,9 +31,14 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
             }
 
         hist = yf.download(symbol, period=period, interval=interval, progress=False)
+        actual_period = period
 
         if hist.empty and period == "1d":
-            hist = yf.download(symbol, period="2d", interval=interval, progress=False)
+            for fallback_period in ["2d", "3d", "5d", "7d", "10d", "14d"]:
+                hist = yf.download(symbol, period=fallback_period, interval=interval, progress=False)
+                if not hist.empty:
+                    actual_period = fallback_period
+                    break
 
         if hist.empty and interval in ["1m", "5m", "15m", "1h"]:
             return {
@@ -60,7 +65,7 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
 
         data = json.loads(df.to_json(orient="records", date_format="iso"))
 
-        if previous_close and data:
+        if previous_close and data and period == "1d":
             date_key = "Datetime" if "Datetime" in data[0] else "Date"
             first_ts = pd.Timestamp(data[0][date_key])
             prev_ts = (first_ts - pd.Timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -83,7 +88,7 @@ def api_index_history(symbol: str, period: str = "1d", interval: str = "1m", lim
                 "currency": index_info.get("currency"),
             },
             "previous_close": previous_close,
-            "period": period,
+            "period": actual_period,
             "interval": interval,
             "data": data,
             "count": len(data),

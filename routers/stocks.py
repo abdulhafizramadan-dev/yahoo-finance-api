@@ -8,10 +8,12 @@ from yfinance import EquityQuery
 
 from core.cache import (
     gainers_cache, losers_cache, top_values_cache, top_volumes_cache,
-    history_cache, news_cache, cache_timestamps, is_cache_valid,
+    history_cache, news_cache, stock_detail_cache,
+    keystats_cache, analysis_cache, financials_cache, profile_cache,
+    cache_timestamps, is_cache_valid,
 )
 from core.news_utils import extract_news_item
-from core.utils import serialize_value
+from core.utils import serialize_value, serialize_dataframe, serialize_series_to_records, serialize_df_to_records
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -186,9 +188,13 @@ def api_stock_history(ticker: str, period: str = "1mo", interval: str = "1d", li
 
         t = yf.Ticker(ticker)
         hist = t.history(period=period, interval=interval)
+        actual_period = period
 
         if (hist is None or (isinstance(hist, pd.DataFrame) and hist.empty)) and period == "1d":
-            hist = t.history(period="2d", interval=interval)
+            for fallback_period in ["2d", "3d", "5d", "7d", "10d", "14d"]:
+                hist = t.history(period=fallback_period, interval=interval)
+                if hist is not None and isinstance(hist, pd.DataFrame) and not hist.empty:
+                    break
 
         previous_close = None
         try:
@@ -225,7 +231,7 @@ def api_stock_history(ticker: str, period: str = "1mo", interval: str = "1d", li
             "previous_close": previous_close,
             "history": history,
             "count": count,
-            "period": period,
+            "period": actual_period,
             "interval": interval,
             "cached": False,
             "timestamp": datetime.now().isoformat(),
@@ -276,8 +282,313 @@ def api_stock_news(ticker: str, count: int = 10, tab: str = "all"):
         return {"error": str(e), "status": "failed", "ticker": ticker, "timestamp": datetime.now().isoformat()}
 
 
+@router.get("/{ticker}/keystats")
+def api_stock_keystats(ticker: str):
+    cache_key = f"keystats_{ticker}"
+    if cache_key in keystats_cache and is_cache_valid(cache_key, ttl_seconds=900):
+        cached = keystats_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+
+        dividend_history = []
+        try:
+            dividend_history = serialize_series_to_records(t.dividends)
+        except Exception:
+            pass
+
+        def _ts_to_iso(val):
+            if val is None:
+                return None
+            try:
+                from datetime import datetime, timezone
+                return datetime.fromtimestamp(val, tz=timezone.utc).strftime("%Y-%m-%d")
+            except Exception:
+                return None
+
+        response = {
+            "ticker": ticker,
+            "valuation": {
+                "currentPrice": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "previousClose": info.get("previousClose"),
+                "open": info.get("open"),
+                "dayLow": info.get("dayLow"),
+                "dayHigh": info.get("dayHigh"),
+                "regularMarketChange": info.get("regularMarketChange"),
+                "regularMarketChangePercent": info.get("regularMarketChangePercent"),
+                "marketCap": info.get("marketCap"),
+                "enterpriseValue": info.get("enterpriseValue"),
+                "trailingPE": info.get("trailingPE"),
+                "forwardPE": info.get("forwardPE"),
+                "pegRatio": info.get("trailingPegRatio"),
+                "priceToBook": info.get("priceToBook"),
+                "priceToSales": info.get("priceToSalesTrailing12Months"),
+                "enterpriseToRevenue": info.get("enterpriseToRevenue"),
+                "enterpriseToEbitda": info.get("enterpriseToEbitda"),
+                "beta": info.get("beta"),
+                "volume": info.get("regularMarketVolume"),
+                "averageVolume": info.get("averageVolume"),
+                "averageVolume10days": info.get("averageVolume10days"),
+                "shortRatio": info.get("shortRatio"),
+                "shortPercentOfFloat": info.get("shortPercentOfFloat"),
+            },
+            "per_share": {
+                "trailingEps": info.get("trailingEps") or info.get("epsTrailingTwelveMonths"),
+                "forwardEps": info.get("forwardEps"),
+                "bookValue": info.get("bookValue"),
+                "revenuePerShare": info.get("revenuePerShare"),
+                "totalCashPerShare": info.get("totalCashPerShare"),
+            },
+            "financial_summary": {
+                "totalRevenue": info.get("totalRevenue"),
+                "revenueGrowth": info.get("revenueGrowth"),
+                "grossProfits": info.get("grossProfits"),
+                "grossMargins": info.get("grossMargins"),
+                "ebitda": info.get("ebitda"),
+                "ebitdaMargins": info.get("ebitdaMargins"),
+                "operatingMargins": info.get("operatingMargins"),
+                "profitMargins": info.get("profitMargins"),
+                "netIncomeToCommon": info.get("netIncomeToCommon"),
+                "totalCash": info.get("totalCash"),
+                "totalDebt": info.get("totalDebt"),
+                "debtToEquity": info.get("debtToEquity"),
+                "currentRatio": info.get("currentRatio"),
+                "quickRatio": info.get("quickRatio"),
+                "operatingCashflow": info.get("operatingCashflow"),
+                "freeCashflow": info.get("freeCashflow"),
+                "returnOnAssets": info.get("returnOnAssets"),
+                "returnOnEquity": info.get("returnOnEquity"),
+                "earningsGrowth": info.get("earningsGrowth"),
+                "earningsQuarterlyGrowth": info.get("earningsQuarterlyGrowth"),
+            },
+            "dividend": {
+                "dividendRate": info.get("dividendRate"),
+                "dividendYield": info.get("dividendYield"),
+                "trailingAnnualDividendRate": info.get("trailingAnnualDividendRate"),
+                "trailingAnnualDividendYield": info.get("trailingAnnualDividendYield"),
+                "fiveYearAvgDividendYield": info.get("fiveYearAvgDividendYield"),
+                "payoutRatio": info.get("payoutRatio"),
+                "exDividendDate": _ts_to_iso(info.get("exDividendDate")),
+                "lastDividendValue": info.get("lastDividendValue"),
+                "lastDividendDate": _ts_to_iso(info.get("lastDividendDate")),
+                "history": dividend_history,
+            },
+            "price_performance": {
+                "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+                "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+                "allTimeHigh": info.get("allTimeHigh"),
+                "allTimeLow": info.get("allTimeLow"),
+                "fiftyDayAverage": info.get("fiftyDayAverage"),
+                "twoHundredDayAverage": info.get("twoHundredDayAverage"),
+                "fiftyTwoWeekChange": info.get("52WeekChange"),
+                "fiftyTwoWeekChangePercent": info.get("fiftyTwoWeekChangePercent"),
+                "SandP52WeekChange": info.get("SandP52WeekChange"),
+                "ytdReturn": info.get("ytdReturn"),
+            },
+            "cached": False,
+            "timestamp": datetime.now().isoformat(),
+        }
+        keystats_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/{ticker}/analysis")
+def api_stock_analysis(ticker: str):
+    cache_key = f"analysis_{ticker}"
+    if cache_key in analysis_cache and is_cache_valid(cache_key, ttl_seconds=86400):
+        cached = analysis_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+
+        def _safe_records(fn, index_key="period"):
+            try:
+                return serialize_df_to_records(fn(), index_key=index_key) or None
+            except Exception:
+                return None
+
+        def _safe_recommendations():
+            try:
+                df = t.recommendations
+                if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+                    return None
+                records = [
+                    {str(col): serialize_value(row[col]) for col in df.columns}
+                    for _, row in df.iterrows()
+                ]
+                return records or None
+            except Exception:
+                return None
+
+        response = {
+            "ticker": ticker,
+            "recommendation": {
+                "key": info.get("recommendationKey"),
+                "mean": info.get("recommendationMean"),
+                "numberOfAnalysts": info.get("numberOfAnalystOpinions"),
+            },
+            "price_targets": {
+                "current": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "low": info.get("targetLowPrice"),
+                "high": info.get("targetHighPrice"),
+                "mean": info.get("targetMeanPrice"),
+                "median": info.get("targetMedianPrice"),
+            },
+            "recommendations_trend": _safe_recommendations(),
+            "earnings_estimate": _safe_records(lambda: t.earnings_estimate),
+            "revenue_estimate": _safe_records(lambda: t.revenue_estimate),
+            "earnings_history": _safe_records(lambda: t.earnings_history, index_key="date"),
+            "eps_trend": _safe_records(lambda: t.eps_trend),
+            "eps_revisions": _safe_records(lambda: t.eps_revisions),
+            "growth_estimates": _safe_records(lambda: t.growth_estimates),
+            "cached": False,
+            "timestamp": datetime.now().isoformat(),
+        }
+        analysis_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/{ticker}/financials")
+def api_stock_financials_detail(ticker: str):
+    cache_key = f"financials_{ticker}"
+    if cache_key in financials_cache and is_cache_valid(cache_key, ttl_seconds=86400):
+        cached = financials_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        t = yf.Ticker(ticker)
+
+        def _safe_df(fn):
+            try:
+                return serialize_dataframe(fn())
+            except Exception:
+                return None
+
+        response = {
+            "ticker": ticker,
+            "income_statement": {
+                "annual": _safe_df(lambda: t.income_stmt),
+                "quarterly": _safe_df(lambda: t.quarterly_income_stmt),
+            },
+            "balance_sheet": {
+                "annual": _safe_df(lambda: t.balance_sheet),
+                "quarterly": _safe_df(lambda: t.quarterly_balance_sheet),
+            },
+            "cash_flow": {
+                "annual": _safe_df(lambda: t.cashflow),
+                "quarterly": _safe_df(lambda: t.quarterly_cashflow),
+            },
+            "cached": False,
+            "timestamp": datetime.now().isoformat(),
+        }
+        financials_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/{ticker}/profile")
+def api_stock_profile(ticker: str):
+    cache_key = f"profile_{ticker}"
+    if cache_key in profile_cache and is_cache_valid(cache_key, ttl_seconds=86400):
+        cached = profile_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+
+        officers = info.get("companyOfficers", [])
+        if isinstance(officers, list):
+            officers = [serialize_value(o) for o in officers]
+        else:
+            officers = []
+
+        response = {
+            "ticker": ticker,
+            "company": {
+                "name": info.get("longName") or info.get("shortName"),
+                "shortName": info.get("shortName"),
+                "symbol": info.get("symbol"),
+                "exchange": info.get("fullExchangeName"),
+                "exchangeCode": info.get("exchange"),
+                "market": info.get("market"),
+                "currency": info.get("currency"),
+                "financialCurrency": info.get("financialCurrency"),
+                "quoteType": info.get("quoteType"),
+                "ipoDate": info.get("ipoExpectedDate"),
+                "firstTradeDateMilliseconds": info.get("firstTradeDateMilliseconds"),
+                "fullTimeEmployees": info.get("fullTimeEmployees"),
+                "irWebsite": info.get("irWebsite"),
+            },
+            "address": {
+                "address1": info.get("address1"),
+                "address2": info.get("address2"),
+                "city": info.get("city"),
+                "state": info.get("state"),
+                "zip": info.get("zip"),
+                "country": info.get("country"),
+                "phone": info.get("phone"),
+                "fax": info.get("fax"),
+                "website": info.get("website"),
+            },
+            "overview": {
+                "sector": info.get("sector"),
+                "sectorKey": info.get("sectorKey"),
+                "sectorDisp": info.get("sectorDisp"),
+                "industry": info.get("industry"),
+                "industryKey": info.get("industryKey"),
+                "industryDisp": info.get("industryDisp"),
+                "description": info.get("longBusinessSummary"),
+            },
+            "ownership": {
+                "heldPercentInsiders": info.get("heldPercentInsiders"),
+                "heldPercentInstitutions": info.get("heldPercentInstitutions"),
+                "sharesOutstanding": info.get("sharesOutstanding"),
+                "floatShares": info.get("floatShares"),
+                "impliedSharesOutstanding": info.get("impliedSharesOutstanding"),
+            },
+            "governance": {
+                "auditRisk": info.get("auditRisk"),
+                "boardRisk": info.get("boardRisk"),
+                "compensationRisk": info.get("compensationRisk"),
+                "shareHolderRightsRisk": info.get("shareHolderRightsRisk"),
+                "overallRisk": info.get("overallRisk"),
+            },
+            "officers": officers,
+            "cached": False,
+            "timestamp": datetime.now().isoformat(),
+        }
+        profile_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
+    except Exception as e:
+        return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
+
+
 @router.get("/{ticker}")
 def api_stock_detail(ticker: str):
+    cache_key = f"stock_detail_{ticker}"
+    if cache_key in stock_detail_cache and is_cache_valid(cache_key):
+        cached = stock_detail_cache[cache_key].copy()
+        cached["cached"] = True
+        return cached
+
     try:
         if not ticker:
             return {"error": "ticker is required", "status": "failed"}
@@ -289,7 +600,15 @@ def api_stock_detail(ticker: str):
 
         serialized_raw = {k: serialize_value(v) for k, v in raw_info.items()} if isinstance(raw_info, dict) else {}
 
-        return {"ticker": ticker, "raw_info": serialized_raw, "timestamp": datetime.now().isoformat()}
+        response = {
+            "ticker": ticker,
+            "raw_info": serialized_raw,
+            "cached": False,
+            "timestamp": datetime.now().isoformat(),
+        }
+        stock_detail_cache[cache_key] = response
+        cache_timestamps[cache_key] = datetime.now()
+        return response
     except Exception as e:
         return {"error": str(e), "status": "failed", "timestamp": datetime.now().isoformat()}
 
